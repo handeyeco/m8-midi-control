@@ -1,0 +1,29 @@
+section {
+  padding: 1rem;
+}
+
+.mute, .solo {
+  margin: 0.25rem;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.mute {
+  border: 2px solid maroon;
+  background: none;
+}
+
+.mute.mute--active {
+  background: maroon;
+  color: white;
+}
+
+.solo {
+  border: 2px solid steelblue;
+  background: none;
+}
+
+.solo.solo--active {
+  background: steelblue;
+  color: white;
+}
