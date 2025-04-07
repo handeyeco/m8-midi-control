@@ -28,6 +28,40 @@ import "./App.css";
 //   T8_SOLO: 27,
 // };
 
+/**
+ * TODO
+ * - Play button? (note 20)
+ * - Mute/Solo buttons? (note 2 & 3 + 101-108)
+ * - Temp vs toggle mute/solo?
+ * - Project button (note 98)
+ */
+
+class PadTranslationMap {
+  m8ToLpMapping: Record<number, number> = {};
+  lpToM8Mapping: Record<number, number> = {};
+
+  constructor(_m8ToLpMapping: Record<number, number>) {
+    this.m8ToLpMapping = _m8ToLpMapping;
+
+    Object.entries(_m8ToLpMapping).forEach(([key, value]) => {
+      this.lpToM8Mapping[value] = +key;
+    });
+  }
+
+  getLpPad(m8Pad: number) {
+    return this.m8ToLpMapping[m8Pad] || m8Pad;
+  }
+
+  getM8Pad(lpPad: number) {
+    return this.lpToM8Mapping[lpPad] || lpPad;
+  }
+}
+
+const mapping = new PadTranslationMap({
+  80: 91,
+  70: 92,
+});
+
 type Action =
   | { type: "init" }
   | { type: "toggle-mute"; track: number }
@@ -43,6 +77,7 @@ const SYSEX_END = 0xf7;
 const CHANNEL = 0x09; // Channel 10
 const NOTE_ON = 0x90;
 const NOTE_OFF = 0x80;
+const CC = 0xb0;
 const DEVICE_ID_REQ = [0xf0, 0x7e, 0x7f, 0x06, 0x01, 0xf7];
 const DEVICE_ID_FILLER = [0x01, 0x01, 0x01, 0x01];
 const DEVICE_ID_RES = [
@@ -123,6 +158,18 @@ function isSysex(data: number[]): boolean {
   return true;
 }
 
+function logEvent(event: MIDIMessageEvent, src: "M8" | "LP") {
+  const data = event.data ? Array.from(event.data) : [];
+
+  console.log({
+    src,
+    event,
+    data: data,
+    dec: data.map((d) => d.toString(10)).join(" "),
+    hex: data.map((d) => d.toString(16)).join(" "),
+  });
+}
+
 function App() {
   const [midiEnabled, setMidiEnabled] = useState<boolean>(false);
   const [noteNum, setNoteNum] = useState<number>(0);
@@ -159,14 +206,6 @@ function App() {
 
     const data = Array.from(event.data);
 
-    console.log({
-      type: "M8 message",
-      event,
-      data: data,
-      dec: data.map((d) => d.toString(10)).join(" "),
-      hex: data.map((d) => d.toString(16)).join(" "),
-    });
-
     if (isSysex(data)) {
       // Device ID
       if (arraysMatch(data, DEVICE_ID_REQ)) {
@@ -187,8 +226,15 @@ function App() {
 
     // Note on/off messages are what are used to
     // control LP LEDs
-    if (type === 0x90 || type === 0x80) {
-      launchpadOutput.current?.send(data);
+    if (type === NOTE_ON || type === NOTE_OFF || type === CC) {
+      // if (note > 88 || note < 11 || note % 10 === 0 || note % 10 === 9) {
+      //   console.log(`${note}: ${data[2]}`);
+      // }
+      const note = data[1];
+      const remapped = mapping.getLpPad(note)
+      launchpadOutput.current?.send([data[0], remapped, data[2]]);
+    } else {
+      logEvent(event, "M8");
     }
   }
 
@@ -196,14 +242,6 @@ function App() {
     if (!event.data) return;
 
     const data = Array.from(event.data);
-
-    console.log({
-      type: "LP message",
-      event,
-      data: data,
-      dec: data.map((d) => d.toString(10)).join(" "),
-      hex: data.map((d) => d.toString(16)).join(" "),
-    });
 
     if (isSysex(data)) {
       // ignore sysex messages
@@ -214,10 +252,13 @@ function App() {
 
     // Note on/off messages are what LP sends
     // when pressing pads
-    if (type === 0x90 || type === 0x80) {
-      interfaceOutput.current?.send(data);
+    if (type === NOTE_ON || type === NOTE_OFF || type === CC) {
+      const note = data[1];
+      const remapped = mapping.getM8Pad(note)
+      interfaceOutput.current?.send([data[0], remapped, data[2]]);
+    } else {
+      logEvent(event, "M8");
     }
-
   }
 
   useEffect(() => {
