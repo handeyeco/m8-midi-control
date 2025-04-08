@@ -5,7 +5,8 @@ import {
   DEVICE_ID_REQ,
   DEVICE_ID_RES,
   LPPRO3_PROG_MODE,
-  LPMINI3_PROG_MODE
+  LPMINI3_PROG_MODE,
+  determineNextControlMode
 } from "./midi-mappers";
 
 describe("isSysex", () => {
@@ -134,6 +135,55 @@ describe("mapM8ToLPMidi", () => {
       toLP: [],
     });
   })
+
+  it("filters commands to bottom row", () => {
+    for (let i = 0; i < 9; i++) {
+      const input = [0x90, 0x0B + i, 0x01]
+      const output = mapM8ToLPMidi(input);
+      expect(output).toEqual({
+        toM8: [],
+        toLP: [],
+      });
+    }
+  })
+
+  it("moves mute/solo row", () => {
+    for (let i = 0; i < 8; i++) {
+      const input = [0x90, 0x65 + i, 0x01]
+      const output = mapM8ToLPMidi(input);
+      expect(output).toEqual({
+        toM8: [],
+        toLP: [[0x90, 0x0b + i, 0x01]],
+      });
+    }
+  })
+
+  it("filters mute/solo buttons when not active", () => {
+    for (let i = 0; i < 2; i++) {
+      const input = [0x90, 0x02 + i, 0x01]
+      const output = mapM8ToLPMidi(input);
+      expect(output).toEqual({
+        toM8: [],
+        toLP: [],
+      });
+    }
+  })
+
+  it("passes through mute/solo buttons when active", () => {
+    let input = [0x90, 0x02, 0x05]
+    let output = mapM8ToLPMidi(input);
+    expect(output).toEqual({
+      toM8: [],
+      toLP: [[0x90, 0x13, 0x05]],
+    });
+
+    input = [0x90, 0x03, 0x4e]
+    output = mapM8ToLPMidi(input);
+    expect(output).toEqual({
+      toM8: [],
+      toLP: [[0x90, 0x13, 0x4e]],
+    });
+  })
 });
 
 describe("mapLPToM8Midi", () => {
@@ -181,5 +231,52 @@ describe("mapLPToM8Midi", () => {
       toM8: [],
       toLP: [],
     });
+  })
+
+  it("maps bottom row to mute/solo row", () => {
+    for (let i = 0; i < 8; i++) {
+      const input = [0x90, 0x0b + i, 0x01]
+      const output = mapLPToM8Midi(input);
+      expect(output).toEqual({
+        toM8: [[0x90, 0x65 + i, 0x01]],
+        toLP: [],
+      });
+    }
+  })
+
+  it("remaps solo/mute pad to mute and solo pads", () => {
+    let input = [0x90, 0x13, 0x01]
+    let output = mapLPToM8Midi(input, "mute");
+    expect(output).toEqual({
+      toM8: [[0x90, 0x02, 0x01]],
+      toLP: [],
+    });
+
+    input = [0x90, 0x13, 0x01]
+    output = mapLPToM8Midi(input, "solo");
+    expect(output).toEqual({
+      toM8: [[0x90, 0x03, 0x01]],
+      toLP: [],
+    });
+  })
+})
+
+describe("determineNextControlMode", () => {
+  it("goes to mute after solo", () => {
+    const input = [0xb0, 0x13, 0x01]
+    const output = determineNextControlMode(input, "solo")
+    expect(output).toBe("mute")
+  })
+
+  it("goes to solo after mute", () => {
+    const input = [0xb0, 0x13, 0x01]
+    const output = determineNextControlMode(input, "mute")
+    expect(output).toBe("solo")
+  })
+
+  it("ignores 0 CC value", () => {
+    const input = [0xb0, 0x13, 0x00]
+    const output = determineNextControlMode(input, "mute")
+    expect(output).toBe("mute")
   })
 })

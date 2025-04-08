@@ -1,4 +1,5 @@
 import {arraysMatch} from "./util"
+import {ControlMode} from "./types"
 
 type MapperOutput = {
   toM8: ReadonlyArray<ReadonlyArray<number>>;
@@ -67,39 +68,55 @@ export function mapM8ToLPMidi(data: ReadonlyArray<number>): MapperOutput {
   }
 
    else if (isNoteOrCC(data[0])) {
-    const byte1 = data[1]
-    if (byte1 === 0x63) {
+    const [b0, b1, b2] = data
+
+    if (b1 === 0x63) {
       // overwrite control of LP logo LED
       // (note on, channel 1, note 99, color blue)
       toLP.push([0x90, 0x63, C_SOLO_BLUE])
     } else if (
       // LP Mini's arrow up
-      byte1 === 0x5B ||
+      b1 === 0x5B ||
       // LP Mini's arrow down
-      byte1 === 0x5C ||
+      b1 === 0x5C ||
       // LP Mini's keys buttons
-      byte1 === 0x61
+      b1 === 0x61 ||
+      // Filter the bottom row,
+      // so we can use it for mutes/solos
+      (b1 >= 0x0b && b1 <= 0x13)
     ) {
       // ignore overwritten pads
       // (pads that are used in place of LP Pro pads)
-    } else if (byte1 === 0x50) {
+    } else if (b1 === 0x50) {
       // move up arrow
-      toLP.push([data[0], 0x5B, data[2]])
-    } else if (byte1 === 0x46) {
+      toLP.push([b0, 0x5B, b2])
+    } else if (b1 === 0x46) {
       // move down arrow
-      toLP.push([data[0], 0x5C, data[2]])
-    } else if (byte1 === 0x14) {
+      toLP.push([b0, 0x5C, b2])
+    } else if (b1 === 0x14) {
       // move play button
-      toLP.push([data[0], 0x61, data[2]])
+      toLP.push([b0, 0x61, b2])
+    } else if (b1 === 0x02 || b1 === 0x03) {
+      // edge case of handling the mute/solo button
+      // we only want to pass through the active button
+      // (0x05 red for mute, 0x4e blue for solo)
+      if ((b1 === 0x02 && b2 === 0x05) || (b1 === 0x03 && b2 === 0x4e)) {
+        toLP.push([b0, 0x13, b2])
+      }
+      // ignore the rest for 0x02 and 0x03
+    } else if (b1 >= 0x65 && b1 <= 0x6c) {
+      // move mute/solo buttons
+      const offset = b1 - 0x65
+      toLP.push([b0, 0x0b + offset, b2])
     } else {
       toLP.push(data)
     }
   }
 
-  if (data.length && !toM8.length && !toLP.length) {
-    const dataStr = data.map(n => "0x"+n.toString(16)).join(" ")
-    console.log(`M8 -> LP unhandled/ignored data: ${dataStr}`)
-  }
+  // if (data.length && !toM8.length && !toLP.length) {
+  //   const dataStr = data.map(n => "0x"+n.toString(16)).join(" ")
+  //   console.log(`M8 -> LP unhandled/ignored data: ${dataStr}`)
+  // }
 
   return {
     toM8,
@@ -107,35 +124,57 @@ export function mapM8ToLPMidi(data: ReadonlyArray<number>): MapperOutput {
   };
 }
 
-export function mapLPToM8Midi(data: ReadonlyArray<number>): MapperOutput {
+export function mapLPToM8Midi(data: ReadonlyArray<number>, nextMode: ControlMode = "mute"): MapperOutput {
   const toM8: Array<ReadonlyArray<number>> = [];
   const toLP: Array<ReadonlyArray<number>> = [];
 
   if (isNoteOrCC(data[0])) {
-    const byte1 = data[1]
-    if (byte1 === 0x5B) {
+    const [b0, b1, b2] = data
+
+    if (b1 === 0x5B) {
       // move up arrow
-      toM8.push([data[0], 0x50, data[2]])
-    }
-    else if (byte1 === 0x5C) {
+      toM8.push([b0, 0x50, b2])
+    } else if (b1 === 0x5C) {
       // move down arrow
-      toM8.push([data[0], 0x46, data[2]])
-    }
-    else if (byte1 === 0x61) {
+      toM8.push([b0, 0x46, b2])
+    } else if (b1 === 0x61) {
       // move keys button
-      toM8.push([data[0], 0x14, data[2]])
+      toM8.push([b0, 0x14, b2])
+    } else if (b1 >= 0x0b && b1 <= 0x12) {
+      // move mute/solo row buttons
+      const offset = b1 - 0x0b
+      toM8.push([b0, 0x65 + offset, b2])
+    } else if (b1 === 0x13) {
+      // handle stop/solo/mute button
+      // we're using the one Mini button as if it were two Pro buttons
+      // depending on the current mute/solo state we're in
+      const proMuteButton = 0x02
+      const proSoloButton = 0x03
+      const toSend = nextMode === "mute" ? proMuteButton : proSoloButton
+      toM8.push([b0, toSend, b2])
     } else {
       toM8.push(data)
     }
   }
 
-  if (data.length && !toM8.length && !toLP.length) {
-    const dataStr = data.map(n => "0x"+n.toString(16)).join(" ")
-    console.log(`LP -> M8 unhandled/ignored data: ${dataStr}`)
-  }
+  // if (data.length && !toM8.length && !toLP.length) {
+  //   const dataStr = data.map(n => "0x"+n.toString(16)).join(" ")
+  //   console.log(`LP -> M8 unhandled/ignored data: ${dataStr}`)
+  // }
 
   return {
     toM8,
     toLP,
   };
+}
+
+export function determineNextControlMode(data: ReadonlyArray<number>, currMode: ControlMode) {
+  let nextMode = currMode
+
+  const type = data[0] & 0xF0
+  if (type === CC && data[1] === 0x13 && data[2] > 0) {
+    nextMode = currMode === "mute" ? "solo" : "mute";
+  }
+
+  return nextMode
 }

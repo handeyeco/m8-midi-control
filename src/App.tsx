@@ -1,6 +1,7 @@
 import { useState, useEffect, useReducer, useRef, useCallback } from "react";
-import {mapM8ToLPMidi, mapLPToM8Midi} from "./midi-mappers"
+import {mapM8ToLPMidi, mapLPToM8Midi, determineNextControlMode} from "./midi-mappers"
 import "./App.css";
+import { ControlMode } from "./types";
 
 // const keys = {
 //   PLAY: 0,
@@ -31,9 +32,8 @@ import "./App.css";
 
 /**
  * TODO
- * - Mute/Solo buttons? (note 2 & 3 + 101-108)
- * - Temp vs toggle mute/solo?
  * - returning to normal layout when disabling CTRL mode
+ * - Temp vs toggle mute/solo?
  */
 
 type Action =
@@ -93,6 +93,8 @@ function reducer(state: State, action: Action) {
 function App() {
   const [midiEnabled, setMidiEnabled] = useState<boolean>(false);
   const [noteNum, setNoteNum] = useState<number>(0);
+  // controls how the bottom row of buttons behave
+  const [controlMode, setControlMode] = useState<ControlMode>("mute");
   const [state, dispatch] = useReducer(reducer, initialState);
   const prevState = useRef<State>(state);
   const midiAccess = useRef<MIDIAccess>(null);
@@ -140,7 +142,13 @@ function App() {
     if (!event.data) return;
 
     const data = Array.from(event.data);
-    const { toM8, toLP } = mapLPToM8Midi(data)
+
+    const nextControlMode = determineNextControlMode(data, controlMode)
+    if (controlMode !== nextControlMode) {
+      setControlMode(nextControlMode)
+    }
+
+    const { toM8, toLP } = mapLPToM8Midi(data, nextControlMode)
 
     toM8.forEach(d => {
       interfaceOutput.current?.send(d);
@@ -149,7 +157,7 @@ function App() {
     toLP.forEach(d => {
       launchpadOutput.current?.send(d);
     })
-  }, []);
+  }, [controlMode]);
 
   useEffect(() => {
     if (!midiEnabled) {
