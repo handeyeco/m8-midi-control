@@ -1,4 +1,4 @@
-import { useState, useEffect, useReducer, useRef } from "react";
+import { useState, useEffect, useReducer, useRef, useCallback } from "react";
 import "./App.css";
 
 // const keys = {
@@ -30,10 +30,9 @@ import "./App.css";
 
 /**
  * TODO
- * - Play button? (note 20)
  * - Mute/Solo buttons? (note 2 & 3 + 101-108)
  * - Temp vs toggle mute/solo?
- * - Project button (note 98)
+ * - returning to normal layout when disabling CTRL mode
  */
 
 class PadTranslationMap {
@@ -46,20 +45,33 @@ class PadTranslationMap {
     Object.entries(_m8ToLpMapping).forEach(([key, value]) => {
       this.lpToM8Mapping[value] = +key;
     });
+
+    console.log({
+      m8ToLpMapping: this.m8ToLpMapping,
+      lpToM8Mapping: this.lpToM8Mapping
+    })
   }
 
   getLpPad(m8Pad: number) {
+    // this is probably going to be a source for bugs
+    // but I think I need to reverse block mapped pads
+    if (this.lpToM8Mapping[m8Pad]) return 0
     return this.m8ToLpMapping[m8Pad] || m8Pad;
   }
 
   getM8Pad(lpPad: number) {
+    // this is probably going to be a source for bugs
+    // but I think I need to reverse block mapped pads
+    if (this.m8ToLpMapping[lpPad]) return 0
     return this.lpToM8Mapping[lpPad] || lpPad;
   }
 }
 
 const mapping = new PadTranslationMap({
-  80: 91,
-  70: 92,
+  // M8 pad number: LP pad number
+  0x50: 0x5b,
+  0x46: 0x5c,
+  0x14: 0x61,
 });
 
 type Action =
@@ -72,6 +84,11 @@ type State = {
   solos: boolean[];
 };
 
+// Colors
+// const C_MUTE_RED = 0x05;
+const C_SOLO_BLUE = 0x4e;
+
+// MIDI
 const SYSEX_START = 0xf0;
 const SYSEX_END = 0xf7;
 const CHANNEL = 0x09; // Channel 10
@@ -164,7 +181,7 @@ function logEvent(event: MIDIMessageEvent, src: "M8" | "LP") {
   console.log({
     src,
     event,
-    data: data,
+    data,
     dec: data.map((d) => d.toString(10)).join(" "),
     hex: data.map((d) => d.toString(16)).join(" "),
   });
@@ -201,7 +218,7 @@ function App() {
     }
   }
 
-  function handleM8Message(event: MIDIMessageEvent) {
+  const handleM8Message = useCallback((event: MIDIMessageEvent) => {
     if (!event.data) return;
 
     const data = Array.from(event.data);
@@ -227,18 +244,28 @@ function App() {
     // Note on/off messages are what are used to
     // control LP LEDs
     if (type === NOTE_ON || type === NOTE_OFF || type === CC) {
-      // if (note > 88 || note < 11 || note % 10 === 0 || note % 10 === 9) {
-      //   console.log(`${note}: ${data[2]}`);
-      // }
       const note = data[1];
-      const remapped = mapping.getLpPad(note)
+
+      // Block pads we want to handle ourselves
+      if (
+        // 0x63 is the top-right LP logo LED
+        note === 0x63
+      ) {
+        return;
+      }
+
+      const remapped = mapping.getLpPad(note);
+      if (remapped === 0x5c) {
+        console.log("here")
+        console.log({event, data, remapped})
+      }
       launchpadOutput.current?.send([data[0], remapped, data[2]]);
     } else {
       logEvent(event, "M8");
     }
-  }
+  }, []);
 
-  function handleLPMessage(event: MIDIMessageEvent) {
+  const handleLPMessage = useCallback((event: MIDIMessageEvent) => {
     if (!event.data) return;
 
     const data = Array.from(event.data);
@@ -249,53 +276,76 @@ function App() {
     }
 
     const type = data[0] & 0xf0;
+    const note = data[1];
 
     // Note on/off messages are what LP sends
     // when pressing pads
     if (type === NOTE_ON || type === NOTE_OFF || type === CC) {
-      const note = data[1];
-      const remapped = mapping.getM8Pad(note)
+      const remapped = mapping.getM8Pad(note);
       interfaceOutput.current?.send([data[0], remapped, data[2]]);
     } else {
       logEvent(event, "M8");
     }
-  }
+  }, []);
 
   useEffect(() => {
     if (!midiEnabled) {
       navigator.requestMIDIAccess({ sysex: true }).then((access) => {
         midiAccess.current = access;
+        setMidiEnabled(true);
+      });
+    }
+  }, [midiEnabled]);
 
-        Array.from(access.inputs.values()).forEach((i) => {
-          if (i.name === "M4") {
-            interfaceInput.current = i;
-          }
+  useEffect(() => {
+    if (midiEnabled && midiAccess.current) {
+      const access = midiAccess.current;
 
-          if (i.name === "Launchpad Mini MK3 LPMiniMK3 MIDI Out") {
-            launchpadInput.current = i;
-          }
-        });
-
-        Array.from(access.outputs.values()).forEach((i) => {
-          if (i.name === "M4") {
-            interfaceOutput.current = i;
-          }
-
-          if (i.name === "Launchpad Mini MK3 LPMiniMK3 MIDI In") {
-            launchpadOutput.current = i;
-          }
-        });
-
-        if (interfaceInput.current) {
+      Array.from(access.inputs.values()).forEach((i) => {
+        if (i.name === "M4") {
+          interfaceInput.current = i;
           interfaceInput.current.onmidimessage = handleM8Message;
         }
 
-        if (launchpadInput.current) {
+        if (i.name === "Launchpad Mini MK3 LPMiniMK3 MIDI Out") {
+          launchpadInput.current = i;
           launchpadInput.current.onmidimessage = handleLPMessage;
         }
-
-        setMidiEnabled(true);
       });
+
+      Array.from(access.outputs.values()).forEach((i) => {
+        if (i.name === "M4") {
+          interfaceOutput.current = i;
+        }
+
+        if (i.name === "Launchpad Mini MK3 LPMiniMK3 MIDI In") {
+          launchpadOutput.current = i;
+        }
+      });
+
+      // cleanup from useEffect
+      return () => {
+        if (interfaceInput.current) {
+          interfaceInput.current.removeEventListener(
+            "midimessage",
+            handleM8Message
+          );
+        }
+
+        if (launchpadInput.current) {
+          launchpadInput.current.removeEventListener(
+            "midimessage",
+            handleLPMessage
+          );
+        }
+      };
+    }
+  }, [midiEnabled, handleM8Message, handleLPMessage]);
+
+  useEffect(() => {
+    if (midiEnabled) {
+      // light top-right of LP
+      launchpadOutput.current?.send([0x90, 0x63, C_SOLO_BLUE]);
     }
   }, [midiEnabled]);
 
