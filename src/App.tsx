@@ -1,4 +1,5 @@
 import { useState, useEffect, useReducer, useRef, useCallback } from "react";
+import {mapM8ToLPMidi, mapLPToM8Midi} from "./midi-mappers"
 import "./App.css";
 
 // const keys = {
@@ -35,45 +36,6 @@ import "./App.css";
  * - returning to normal layout when disabling CTRL mode
  */
 
-class PadTranslationMap {
-  m8ToLpMapping: Record<number, number> = {};
-  lpToM8Mapping: Record<number, number> = {};
-
-  constructor(_m8ToLpMapping: Record<number, number>) {
-    this.m8ToLpMapping = _m8ToLpMapping;
-
-    Object.entries(_m8ToLpMapping).forEach(([key, value]) => {
-      this.lpToM8Mapping[value] = +key;
-    });
-
-    console.log({
-      m8ToLpMapping: this.m8ToLpMapping,
-      lpToM8Mapping: this.lpToM8Mapping
-    })
-  }
-
-  getLpPad(m8Pad: number) {
-    // this is probably going to be a source for bugs
-    // but I think I need to reverse block mapped pads
-    if (this.lpToM8Mapping[m8Pad]) return 0
-    return this.m8ToLpMapping[m8Pad] || m8Pad;
-  }
-
-  getM8Pad(lpPad: number) {
-    // this is probably going to be a source for bugs
-    // but I think I need to reverse block mapped pads
-    if (this.m8ToLpMapping[lpPad]) return 0
-    return this.lpToM8Mapping[lpPad] || lpPad;
-  }
-}
-
-const mapping = new PadTranslationMap({
-  // M8 pad number: LP pad number
-  0x50: 0x5b,
-  0x46: 0x5c,
-  0x14: 0x61,
-});
-
 type Action =
   | { type: "init" }
   | { type: "toggle-mute"; track: number }
@@ -89,34 +51,9 @@ type State = {
 const C_SOLO_BLUE = 0x4e;
 
 // MIDI
-const SYSEX_START = 0xf0;
-const SYSEX_END = 0xf7;
 const CHANNEL = 0x09; // Channel 10
 const NOTE_ON = 0x90;
 const NOTE_OFF = 0x80;
-const CC = 0xb0;
-const DEVICE_ID_REQ = [0xf0, 0x7e, 0x7f, 0x06, 0x01, 0xf7];
-const DEVICE_ID_FILLER = [0x01, 0x01, 0x01, 0x01];
-const DEVICE_ID_RES = [
-  0xf0,
-  0x7e,
-  0x00,
-  0x06,
-  0x02,
-  0x00,
-  0x20,
-  0x29,
-  0x13,
-  0x01,
-  0x00,
-  0x00,
-  ...DEVICE_ID_FILLER,
-  0xf7,
-];
-const LPPRO3_PROG_MODE = [0xf0, 0x00, 0x20, 0x29, 0x02, 0x0e, 0x0e, 0x01, 0xf7];
-const LPMINI3_PROG_MODE = [
-  0xf0, 0x00, 0x20, 0x29, 0x02, 0x0d, 0x0e, 0x01, 0xf7,
-];
 
 const initialState: State = {
   mutes: new Array(8).fill(false),
@@ -151,40 +88,6 @@ function reducer(state: State, action: Action) {
       return state;
     }
   }
-}
-
-function arraysMatch(a1: number[], a2: number[]) {
-  if (!a1.length || !a2.length || a1.length !== a2.length) return false;
-
-  for (let i = 0; i < a1.length; i++) {
-    if (a1[i] !== a2[i]) return false;
-  }
-
-  return true;
-}
-
-function isSysex(data: number[]): boolean {
-  if (data[0] !== SYSEX_START) {
-    return false;
-  }
-
-  if (data[data.length - 1] !== SYSEX_END) {
-    return false;
-  }
-
-  return true;
-}
-
-function logEvent(event: MIDIMessageEvent, src: "M8" | "LP") {
-  const data = event.data ? Array.from(event.data) : [];
-
-  console.log({
-    src,
-    event,
-    data,
-    dec: data.map((d) => d.toString(10)).join(" "),
-    hex: data.map((d) => d.toString(16)).join(" "),
-  });
 }
 
 function App() {
@@ -222,70 +125,30 @@ function App() {
     if (!event.data) return;
 
     const data = Array.from(event.data);
+    const { toM8, toLP } = mapM8ToLPMidi(data)
 
-    if (isSysex(data)) {
-      // Device ID
-      if (arraysMatch(data, DEVICE_ID_REQ)) {
-        interfaceOutput.current?.send(DEVICE_ID_RES);
-      }
+    toM8.forEach(d => {
+      interfaceOutput.current?.send(d);
+    })
 
-      // Intercept the LP Pro 3 programmer mode (from M8)
-      // replace it with the LP Mini 3 programmer mode
-      if (arraysMatch(data, LPPRO3_PROG_MODE)) {
-        launchpadOutput.current?.send(LPMINI3_PROG_MODE);
-      }
-
-      // ignore other sysex messages
-      return;
-    }
-
-    const type = data[0] & 0xf0;
-
-    // Note on/off messages are what are used to
-    // control LP LEDs
-    if (type === NOTE_ON || type === NOTE_OFF || type === CC) {
-      const note = data[1];
-
-      // Block pads we want to handle ourselves
-      if (
-        // 0x63 is the top-right LP logo LED
-        note === 0x63
-      ) {
-        return;
-      }
-
-      const remapped = mapping.getLpPad(note);
-      if (remapped === 0x5c) {
-        console.log("here")
-        console.log({event, data, remapped})
-      }
-      launchpadOutput.current?.send([data[0], remapped, data[2]]);
-    } else {
-      logEvent(event, "M8");
-    }
+    toLP.forEach(d => {
+      launchpadOutput.current?.send(d);
+    })
   }, []);
 
   const handleLPMessage = useCallback((event: MIDIMessageEvent) => {
     if (!event.data) return;
 
     const data = Array.from(event.data);
+    const { toM8, toLP } = mapLPToM8Midi(data)
 
-    if (isSysex(data)) {
-      // ignore sysex messages
-      return;
-    }
+    toM8.forEach(d => {
+      interfaceOutput.current?.send(d);
+    })
 
-    const type = data[0] & 0xf0;
-    const note = data[1];
-
-    // Note on/off messages are what LP sends
-    // when pressing pads
-    if (type === NOTE_ON || type === NOTE_OFF || type === CC) {
-      const remapped = mapping.getM8Pad(note);
-      interfaceOutput.current?.send([data[0], remapped, data[2]]);
-    } else {
-      logEvent(event, "M8");
-    }
+    toLP.forEach(d => {
+      launchpadOutput.current?.send(d);
+    })
   }, []);
 
   useEffect(() => {
